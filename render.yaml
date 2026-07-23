@@ -14,3 +14,5 @@ services:
         value: 群聊积分预测
       - key: DATABASE_URL
         sync: false
+      - key: ADMIN_TOKEN
+        sync: false

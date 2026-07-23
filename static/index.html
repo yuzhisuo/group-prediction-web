@@ -13,7 +13,7 @@
     <div>
       <p class="eyebrow">VIRTUAL POINTS</p>
       <h1>群聊积分预测</h1>
-      <p class="subtitle">创建题目，选择红方或蓝方，查看实时积分占比。</p>
+      <p class="subtitle">创建题目、提交虚拟积分、封盘并查看结算明细。</p>
     </div>
     <div class="header-actions">
       <span id="connectionStatus" class="connection connecting">正在连接</span>
@@ -64,7 +64,7 @@
           <span class="step-number">02</span>
           <div>
             <h2>提交虚拟积分</h2>
-            <p>同一参与者再次提交会覆盖上次选择。</p>
+            <p>同一参与者再次提交会覆盖上次选择；封盘后不可修改。</p>
           </div>
         </div>
         <form id="predictionForm" autocomplete="off">
@@ -105,6 +105,7 @@
         <div>
           <p class="eyebrow">LIVE TOPICS</p>
           <h2>全部预测题</h2>
+          <p class="section-note">点击题目卡片可查看参与明细、封盘、结算或删除。</p>
         </div>
         <div class="topic-tools">
           <input id="searchInput" type="search" placeholder="搜索题目或 ID" aria-label="搜索题目">
@@ -119,6 +120,22 @@
   <footer>
     <p>请勿提交违法、侵权、侮辱或涉及真实财物输赢的内容。</p>
   </footer>
+
+  <div id="detailModal" class="modal" hidden>
+    <div class="modal-backdrop" data-close-modal></div>
+    <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="detailTitle">
+      <div class="modal-header">
+        <div>
+          <p id="detailTopicId" class="eyebrow">TOPIC</p>
+          <h2 id="detailTitle">题目详情</h2>
+        </div>
+        <button id="closeDetailButton" class="icon-button" type="button" aria-label="关闭">×</button>
+      </div>
+      <div id="detailContent" class="detail-content">
+        <div class="empty-state">正在读取详情……</div>
+      </div>
+    </section>
+  </div>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 </body>

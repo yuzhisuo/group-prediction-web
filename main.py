@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import secrets
 import time
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
@@ -10,7 +11,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Literal
 
-from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
@@ -42,6 +43,7 @@ def normalize_database_url(raw_url: str | None) -> str:
 
 
 DATABASE_URL = normalize_database_url(os.getenv("DATABASE_URL"))
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "").strip()
 IS_SQLITE = DATABASE_URL.startswith("sqlite")
 engine = create_engine(
     DATABASE_URL,
@@ -138,6 +140,10 @@ class PredictionCreate(BaseModel):
         return clean_text(value)
 
 
+class SettlementCreate(BaseModel):
+    winning_side: Literal["red", "blue"]
+
+
 class SimpleRateLimiter:
     """Small single-process limiter suitable for a beginner deployment."""
 
@@ -206,6 +212,31 @@ def get_db():
         db.close()
 
 
+def require_admin(x_admin_token: str | None = Header(default=None)) -> None:
+    if not ADMIN_TOKEN:
+        raise HTTPException(status_code=503, detail="管理员口令尚未在 Render 中配置")
+    supplied = (x_admin_token or "").strip()
+    if not supplied or not secrets.compare_digest(supplied, ADMIN_TOKEN):
+        raise HTTPException(status_code=403, detail="管理员口令错误")
+
+
+def winning_side_from_status(status: str) -> str | None:
+    if status == "settled_red":
+        return "red"
+    if status == "settled_blue":
+        return "blue"
+    return None
+
+
+def status_label(status: str) -> str:
+    return {
+        "open": "开放中",
+        "locked": "已封盘",
+        "settled_red": "已结算",
+        "settled_blue": "已结算",
+    }.get(status, status)
+
+
 def topic_snapshot(db: Session, topic: Topic) -> dict:
     totals = db.execute(
         select(
@@ -233,6 +264,13 @@ def topic_snapshot(db: Session, topic: Topic) -> dict:
     if created_at.tzinfo is None:
         created_at = created_at.replace(tzinfo=timezone.utc)
 
+    winning_side = winning_side_from_status(topic.status)
+    winning_label = None
+    if winning_side == "red":
+        winning_label = topic.red_label
+    elif winning_side == "blue":
+        winning_label = topic.blue_label
+
     return {
         "id": topic.id,
         "title": topic.title,
@@ -240,6 +278,9 @@ def topic_snapshot(db: Session, topic: Topic) -> dict:
         "blue_label": topic.blue_label,
         "creator_id": topic.creator_id,
         "status": topic.status,
+        "status_label": status_label(topic.status),
+        "winning_side": winning_side,
+        "winning_label": winning_label,
         "created_at": created_at.isoformat(),
         "red_points": red_points,
         "blue_points": blue_points,
@@ -257,6 +298,94 @@ def all_topic_snapshots(db: Session) -> list[dict]:
     return [topic_snapshot(db, topic) for topic in topics]
 
 
+def prediction_rows(db: Session, topic_id: int) -> list[Prediction]:
+    return list(
+        db.scalars(
+            select(Prediction)
+            .where(Prediction.topic_id == topic_id)
+            .order_by(Prediction.side.asc(), Prediction.points.desc(), Prediction.participant_id.asc())
+        ).all()
+    )
+
+
+def calculate_settlement(topic: Topic, predictions: list[Prediction]) -> dict | None:
+    winning_side = winning_side_from_status(topic.status)
+    if winning_side is None:
+        return None
+
+    total_pool = sum(item.points for item in predictions)
+    winning_predictions = [item for item in predictions if item.side == winning_side]
+    winning_pool = sum(item.points for item in winning_predictions)
+    if winning_pool <= 0:
+        return {
+            "winning_side": winning_side,
+            "winning_label": topic.red_label if winning_side == "red" else topic.blue_label,
+            "total_pool": total_pool,
+            "winning_pool": 0,
+            "rows": [],
+        }
+
+    allocations: dict[int, int] = {}
+    remainder_rank: list[tuple[int, str, int]] = []
+    allocated = 0
+    for item in winning_predictions:
+        numerator = item.points * total_pool
+        base, remainder = divmod(numerator, winning_pool)
+        allocations[item.id] = base
+        allocated += base
+        remainder_rank.append((remainder, item.participant_id, item.id))
+
+    remaining = total_pool - allocated
+    remainder_rank.sort(key=lambda row: (-row[0], row[1], row[2]))
+    for _, _, prediction_id in remainder_rank[:remaining]:
+        allocations[prediction_id] += 1
+
+    rows = []
+    for item in sorted(predictions, key=lambda row: (row.side != winning_side, row.participant_id)):
+        returned_points = allocations.get(item.id, 0)
+        net_change = returned_points - item.points
+        rows.append(
+            {
+                "participant_id": item.participant_id,
+                "side": item.side,
+                "side_label": topic.red_label if item.side == "red" else topic.blue_label,
+                "points": item.points,
+                "returned_points": returned_points,
+                "net_change": net_change,
+                "is_winner": item.side == winning_side,
+            }
+        )
+
+    return {
+        "winning_side": winning_side,
+        "winning_label": topic.red_label if winning_side == "red" else topic.blue_label,
+        "total_pool": total_pool,
+        "winning_pool": winning_pool,
+        "rows": rows,
+    }
+
+
+def topic_details(db: Session, topic: Topic) -> dict:
+    snapshot = topic_snapshot(db, topic)
+    predictions = prediction_rows(db, topic.id)
+    snapshot["predictions"] = [
+        {
+            "participant_id": item.participant_id,
+            "side": item.side,
+            "side_label": topic.red_label if item.side == "red" else topic.blue_label,
+            "points": item.points,
+            "updated_at": (
+                item.updated_at.replace(tzinfo=timezone.utc)
+                if item.updated_at.tzinfo is None
+                else item.updated_at
+            ).isoformat(),
+        }
+        for item in predictions
+    ]
+    snapshot["settlement"] = calculate_settlement(topic, predictions)
+    return snapshot
+
+
 async def broadcast_topics() -> None:
     with SessionLocal() as db:
         payload = {"type": "topics_updated", "topics": all_topic_snapshots(db)}
@@ -272,7 +401,7 @@ async def lifespan(_: FastAPI):
 app = FastAPI(
     title=os.getenv("APP_NAME", "群聊积分预测"),
     description="虚拟积分娱乐预测网页；积分不具备货币价值。",
-    version="2.0.0",
+    version="3.0.0",
     lifespan=lifespan,
 )
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -308,7 +437,12 @@ def homepage() -> FileResponse:
 def health() -> dict:
     with engine.connect() as connection:
         connection.execute(select(1))
-    return {"ok": True, "mode": "virtual_points_only", "database": "sqlite" if IS_SQLITE else "postgres"}
+    return {
+        "ok": True,
+        "mode": "virtual_points_only",
+        "database": "sqlite" if IS_SQLITE else "postgres",
+        "admin_configured": bool(ADMIN_TOKEN),
+    }
 
 
 @app.get("/api/topics")
@@ -322,6 +456,14 @@ def get_topic(topic_id: int, db: Session = Depends(get_db)) -> dict:
     if topic is None:
         raise HTTPException(status_code=404, detail="预测题不存在")
     return topic_snapshot(db, topic)
+
+
+@app.get("/api/topics/{topic_id}/details")
+def get_topic_details(topic_id: int, db: Session = Depends(get_db)) -> dict:
+    topic = db.get(Topic, topic_id)
+    if topic is None:
+        raise HTTPException(status_code=404, detail="预测题不存在")
+    return topic_details(db, topic)
 
 
 @app.post("/api/topics", status_code=201)
@@ -351,7 +493,7 @@ async def create_or_update_prediction(
     if topic is None:
         raise HTTPException(status_code=404, detail="预测题不存在")
     if topic.status != "open":
-        raise HTTPException(status_code=409, detail="该预测题已关闭")
+        raise HTTPException(status_code=409, detail="该预测题已经封盘或结算")
 
     prediction = db.scalar(
         select(Prediction).where(
@@ -379,6 +521,67 @@ async def create_or_update_prediction(
     }
     await broadcast_topics()
     return result
+
+
+@app.post("/api/topics/{topic_id}/lock", dependencies=[Depends(require_admin)])
+async def lock_topic(topic_id: int, db: Session = Depends(get_db)) -> dict:
+    topic = db.get(Topic, topic_id)
+    if topic is None:
+        raise HTTPException(status_code=404, detail="预测题不存在")
+    if topic.status == "locked":
+        raise HTTPException(status_code=409, detail="该预测题已经封盘")
+    if winning_side_from_status(topic.status):
+        raise HTTPException(status_code=409, detail="该预测题已经结算")
+    if topic.status != "open":
+        raise HTTPException(status_code=409, detail="当前状态无法封盘")
+
+    topic.status = "locked"
+    db.commit()
+    db.refresh(topic)
+    result = topic_snapshot(db, topic)
+    await broadcast_topics()
+    return result
+
+
+@app.post("/api/topics/{topic_id}/settle", dependencies=[Depends(require_admin)])
+async def settle_topic(
+    topic_id: int,
+    payload: SettlementCreate,
+    db: Session = Depends(get_db),
+) -> dict:
+    topic = db.get(Topic, topic_id)
+    if topic is None:
+        raise HTTPException(status_code=404, detail="预测题不存在")
+    if topic.status != "locked":
+        if winning_side_from_status(topic.status):
+            raise HTTPException(status_code=409, detail="该预测题已经结算")
+        raise HTTPException(status_code=409, detail="请先封盘，再进行结算")
+
+    predictions = prediction_rows(db, topic.id)
+    if not predictions:
+        raise HTTPException(status_code=409, detail="没有参与记录，无法结算")
+    winning_pool = sum(item.points for item in predictions if item.side == payload.winning_side)
+    if winning_pool <= 0:
+        raise HTTPException(status_code=409, detail="获胜方没有参与记录，无法分配积分")
+
+    topic.status = f"settled_{payload.winning_side}"
+    db.commit()
+    db.refresh(topic)
+    result = topic_details(db, topic)
+    await broadcast_topics()
+    return result
+
+
+@app.delete("/api/topics/{topic_id}", dependencies=[Depends(require_admin)])
+async def delete_topic(topic_id: int, db: Session = Depends(get_db)) -> dict:
+    topic = db.get(Topic, topic_id)
+    if topic is None:
+        raise HTTPException(status_code=404, detail="预测题不存在")
+    title = topic.title
+    db.delete(topic)
+    db.commit()
+    await broadcast_topics()
+    return {"deleted": True, "topic_id": topic_id, "title": title}
 
 
 @app.websocket("/ws/topics")
