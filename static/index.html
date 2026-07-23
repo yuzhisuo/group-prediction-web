@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#10131a">
+  <title>群聊积分预测</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <div>
+      <p class="eyebrow">VIRTUAL POINTS</p>
+      <h1>群聊积分预测</h1>
+      <p class="subtitle">创建题目，选择红方或蓝方，查看实时积分占比。</p>
+    </div>
+    <div class="header-actions">
+      <span id="connectionStatus" class="connection connecting">正在连接</span>
+      <button id="shareButton" class="secondary-button" type="button">分享链接</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="notice" aria-label="使用说明">
+      <strong>娱乐积分模式</strong>
+      <span>积分仅用于页面展示，无货币价值，不支持充值、提现、转让、兑换、现金或实物奖励。</span>
+    </section>
+
+    <section class="panel-grid">
+      <article class="panel">
+        <div class="panel-heading">
+          <span class="step-number">01</span>
+          <div>
+            <h2>创建预测题</h2>
+            <p>创建后会生成一个数字题目 ID。</p>
+          </div>
+        </div>
+        <form id="topicForm" autocomplete="off">
+          <label>
+            预测题目
+            <input name="title" maxlength="120" minlength="2" placeholder="例如：周末活动选哪一个？" required>
+          </label>
+          <div class="two-columns">
+            <label>
+              红方名称
+              <input name="red_label" maxlength="40" placeholder="例如：去爬山" required>
+            </label>
+            <label>
+              蓝方名称
+              <input name="blue_label" maxlength="40" placeholder="例如：看电影" required>
+            </label>
+          </div>
+          <label>
+            创建者 ID
+            <input name="creator_id" maxlength="32" minlength="2" placeholder="昵称或自定义 ID" required>
+          </label>
+          <button class="primary-button" type="submit">创建题目</button>
+        </form>
+      </article>
+
+      <article class="panel">
+        <div class="panel-heading">
+          <span class="step-number">02</span>
+          <div>
+            <h2>提交虚拟积分</h2>
+            <p>同一参与者再次提交会覆盖上次选择。</p>
+          </div>
+        </div>
+        <form id="predictionForm" autocomplete="off">
+          <div class="two-columns">
+            <label>
+              题目 ID
+              <input id="topicIdInput" name="topic_id" type="number" min="1" inputmode="numeric" placeholder="例如：12" required>
+            </label>
+            <label>
+              参与者 ID
+              <input id="participantInput" name="participant_id" maxlength="32" minlength="2" placeholder="昵称或自定义 ID" required>
+            </label>
+          </div>
+          <label>
+            虚拟积分（1—1000）
+            <input name="points" type="number" min="1" max="1000" inputmode="numeric" placeholder="例如：100" required>
+          </label>
+          <fieldset>
+            <legend>选择一方</legend>
+            <div class="side-options">
+              <label class="side-option red-option">
+                <input type="radio" name="side" value="red" required>
+                <span>红方</span>
+              </label>
+              <label class="side-option blue-option">
+                <input type="radio" name="side" value="blue" required>
+                <span>蓝方</span>
+              </label>
+            </div>
+          </fieldset>
+          <button class="primary-button" type="submit">提交积分</button>
+        </form>
+      </article>
+    </section>
+
+    <section class="topics-section">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">LIVE TOPICS</p>
+          <h2>全部预测题</h2>
+        </div>
+        <div class="topic-tools">
+          <input id="searchInput" type="search" placeholder="搜索题目或 ID" aria-label="搜索题目">
+          <button id="refreshButton" class="secondary-button" type="button">刷新</button>
+        </div>
+      </div>
+      <div id="loadingState" class="empty-state">正在读取题目……</div>
+      <div id="topicsContainer" class="topics-list" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <footer>
+    <p>请勿提交违法、侵权、侮辱或涉及真实财物输赢的内容。</p>
+  </footer>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
